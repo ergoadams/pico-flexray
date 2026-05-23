@@ -1,5 +1,5 @@
 build
-!.vscode/*
+!.vscode/
 .DS_Store
 unused
 .cache
@@ -7,3 +7,5 @@ __pycache__
 *.csv
 .wrangler/
 web/index.html
+build/
+build-ninja/

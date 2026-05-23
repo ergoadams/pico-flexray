@@ -62,9 +62,15 @@ static bool try_send_from_fifo(const char *context);
 //    - len must equal rule.replace_len
 //  op 0x91: Set injector enable
 //    [0x91][u8 enabled]
+//  op 0x92: Replace forwarding filter table
+//    [0x92][u8 enabled][u8 count][count * ([u16 id][u8 direction_mask])]
+//    - direction_mask uses FLEXRAY_FILTER_DIR_* bits from flexray_forwarder_with_injector.h
+//  op 0x93: Clear forwarding filter table
 // ------------------------------------------------------------
 static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
 {
+    enum { USB_FILTER_MAX_RULES = 16 };
+
     uint32_t off = 0;
     while ((uint16_t)(len - off) >= 1) {
         uint8_t op = data[off++];
@@ -87,6 +93,29 @@ static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
             }
             bool en = data[off++] != 0;
             injector_set_enabled(en);
+        } else if (op == 0x92) {
+            if ((uint16_t)(len - off) < 2) {
+                break;
+            }
+            bool enabled = data[off++] != 0;
+            uint8_t count = data[off++];
+            if (count > USB_FILTER_MAX_RULES ||
+                (uint16_t)(len - off) < (uint16_t)(count * 3u)) {
+                break;
+            }
+
+            uint16_t ids[USB_FILTER_MAX_RULES];
+            uint8_t masks[USB_FILTER_MAX_RULES];
+            for (uint8_t i = 0; i < count; i++) {
+                ids[i] = (uint16_t)(data[off] | ((uint16_t)data[off + 1] << 8));
+                masks[i] = data[off + 2];
+                off += 3;
+            }
+            if (flexray_filter_set(count, ids, masks)) {
+                flexray_filter_set_enabled(enabled);
+            }
+        } else if (op == 0x93) {
+            flexray_filter_clear();
         } else if (op == 0x00) {
             continue;
         } else {
