@@ -7,6 +7,7 @@
 #include "flexray_frame.h"
 #include "flexray_fifo.h"
 #include "flexray_forwarder_with_injector.h"
+#include "flexray_replay_gen.h"
 #include <string.h>
 
 // Add near top after includes
@@ -66,6 +67,12 @@ static bool try_send_from_fifo(const char *context);
 //    [0x92][u8 enabled][u8 count][count * ([u16 id][u8 direction_mask])]
 //    - direction_mask uses FLEXRAY_FILTER_DIR_* bits from flexray_forwarder_with_injector.h
 //  op 0x93: Clear forwarding filter table
+//  op 0x94: Configure replay slot
+//    [0x94][u8 slot][u8 cycle_base][u8 cycle_mask][u16 id][u8 indicators][u16 len][len payload bytes]
+//  op 0x95: Clear replay slot, or all slots when slot=0xff
+//    [0x95][u8 slot]
+//  op 0x96: Start single-bus replay
+//  op 0x97: Stop single-bus replay
 // ------------------------------------------------------------
 static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
 {
@@ -115,6 +122,37 @@ static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
         } else if (op == 0x93) {
             flexray_filter_clear();
             flexray_filter_set_enabled(false);
+        } else if (op == 0x94) {
+            if ((uint16_t)(len - off) < 8) {
+                break;
+            }
+            uint8_t slot = data[off++];
+            uint8_t cycle_base = data[off++];
+            uint8_t cycle_mask = data[off++];
+            uint16_t id = (uint16_t)(data[off] | ((uint16_t)data[off + 1] << 8));
+            uint8_t indicators = data[off + 2];
+            uint16_t flen = (uint16_t)(data[off + 3] | ((uint16_t)data[off + 4] << 8));
+            off += 5;
+            if ((uint16_t)(len - off) < flen) {
+                break;
+            }
+            (void)flexray_replay_set_slot(slot, cycle_base, cycle_mask, id,
+                                          indicators, &data[off], flen);
+            off += flen;
+        } else if (op == 0x95) {
+            if ((uint16_t)(len - off) < 1) {
+                break;
+            }
+            uint8_t slot = data[off++];
+            if (slot == 0xFF) {
+                flexray_replay_clear_all_slots();
+            } else {
+                flexray_replay_clear_slot(slot);
+            }
+        } else if (op == 0x96) {
+            (void)flexray_replay_start();
+        } else if (op == 0x97) {
+            flexray_replay_stop();
         } else if (op == 0x00) {
             continue;
         } else {

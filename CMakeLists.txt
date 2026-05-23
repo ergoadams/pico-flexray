@@ -42,6 +42,7 @@ add_executable(pico_flexray
      src/usb_descriptors.c
      src/flexray_bss_streamer.c
      src/flexray_fowarder_with_injector.c
+     src/flexray_replay_gen.c
      src/flexray_fifo.c
      )
 
@@ -56,6 +57,7 @@ pico_set_program_version(pico_flexray "0.1")
 pico_generate_pio_header(pico_flexray 
     ${CMAKE_CURRENT_LIST_DIR}/src/flexray_bss_streamer.pio
     ${CMAKE_CURRENT_LIST_DIR}/src/flexray_forwarder_with_injector.pio
+    ${CMAKE_CURRENT_LIST_DIR}/src/flexray_replay_gen.pio
     )
 
 # Modify the below lines to enable/disable output over UART/USB

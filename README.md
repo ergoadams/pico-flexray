@@ -90,7 +90,24 @@ picotool load -f build/pico_flexray.uf2
 
 Run-time:
 - USB enumerates as a vendor-specific device (no CDC serial). Use UART for logs.
-- On boot, the app prints pin assignments and status, enables transceivers, and starts forwarding.
+- On boot, this branch starts single-bus FR1 capture and waits for replay slots to be loaded.
+
+### Single-bus replay
+
+This branch is for connecting one FlexRay transceiver to one bus. FR1 is used for both replay TX and capture RX:
+
+- FR1 TX: `TXD_FR_1` GPIO 28, `TXEN_FR_1` GPIO 27
+- FR1 RX: `RXD_FR_1` GPIO 26
+- Captured frames, including device responses seen on the bus, are still streamed to the PC over the Panda-style vendor IN endpoint.
+- No responses are forwarded to any other bus.
+
+Load a recorder CSV and start replay:
+
+```bash
+python single_bus_replay.py flexray_log.csv --source 1 --monitor 5
+```
+
+Omit `--source` to load the first replayable instance of each frame ID from the whole CSV. Add `--cycle-specific` to key slots by `(frame_id, cycle_count)` instead of frame ID only. The firmware supports up to 96 replay slots and rejects starts where the configured static slots no longer fit inside a 5 ms FlexRay cycle.
 
 ### Adjusting pins or board
 

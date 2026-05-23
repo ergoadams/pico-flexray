@@ -1,0 +1,54 @@
+; FlexRay single-bus replay generator.
+; FIFO data is an interleaved TXEN/TXD bitstream, MSB first:
+;   bit 0: TXEN (1 = disabled, 0 = active)
+;   bit 1: TXD
+;
+; The C side renders complete 5 ms communication cycles into ping/pong DMA
+; buffers. Idle bus time is encoded as TXEN high and TXD high.
+
+.program flexray_replay_gen
+.fifo tx
+.mov_status txfifo < 1
+.out 1 left auto 32
+
+idle:
+    set pins, 1
+    pull block
+
+.wrap_target
+    out y, 1
+    jmp !y txen_low
+    set pins, 1
+    jmp txd_out
+txen_low:
+    set pins, 0
+    nop
+txd_out:
+    out pins, 1
+.wrap
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void flexray_replay_gen_program_init(PIO pio, uint sm, uint offset,
+                                                   uint tx_pin, uint txen_pin) {
+    pio_gpio_init(pio, tx_pin);
+    pio_gpio_init(pio, txen_pin);
+    gpio_pull_up(tx_pin);
+    gpio_pull_up(txen_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, tx_pin, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, txen_pin, 1, true);
+
+    pio_sm_config c = flexray_replay_gen_program_get_default_config(offset);
+    sm_config_set_set_pins(&c, txen_pin, 1);
+    sm_config_set_out_pins(&c, tx_pin, 1);
+
+    float div = (float)clock_get_hz(clk_sys) / (10.0f * 1000000.0f * 5.0f);
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_pins_with_mask(pio, sm,
+        (1u << tx_pin) | (1u << txen_pin),
+        (1u << tx_pin) | (1u << txen_pin));
+}
+%}

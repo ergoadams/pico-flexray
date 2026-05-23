@@ -21,6 +21,7 @@
 #include "panda_usb.h"
 #include "flexray_bss_streamer.h"
 #include "flexray_forwarder_with_injector.h"
+#include "flexray_replay_gen.h"
 
 #define SRAM __attribute__((section(".data")))
 #define FLASH __attribute__((section(".rodata")))
@@ -129,13 +130,7 @@ static void stats_print(const stream_stats_t *s, uint32_t prev_total, uint32_t p
 
 void core1_entry(void)
 {
-    setup_stream(pio0,
-                 RXD_FR_1_PIN, TXEN_FR_2_PIN,
-                 RXD_FR_2_PIN, TXEN_FR_1_PIN);
-
-    setup_stream_fr34(pio1,
-                      RXD_FR_3_PIN, TXEN_FR_4_PIN,
-                      RXD_FR_4_PIN, TXEN_FR_3_PIN);
+    setup_stream_single_fr1(pio0, RXD_FR_1_PIN, TXEN_FR_2_PIN);
     while (1)
     {
         __wfi();
@@ -224,17 +219,12 @@ int main(void)
     print_pin_assignments();
 
     printf("Actual system clock: %lu Hz\n", clock_get_hz(clk_sys));
-    printf("\n--- FlexRay Continuous Streaming Bridge (Forwarder Mode) ---\n");
+    printf("\n--- FlexRay Single Bus Replay + Capture Mode ---\n");
 
     multicore_launch_core1(core1_entry);
     sleep_ms(500);
 
-
-    setup_forwarder_with_injector(pio2,
-                                  RXD_FR_1_PIN, TXD_FR_2_PIN,
-                                  RXD_FR_2_PIN, TXD_FR_1_PIN,
-                                  RXD_FR_3_PIN, TXD_FR_4_PIN,
-                                  RXD_FR_4_PIN, TXD_FR_3_PIN);
+    flexray_replay_init(pio2, TXD_FR_1_PIN, TXEN_FR_1_PIN);
 
     stream_stats_t stats = (stream_stats_t){0};
 
@@ -250,6 +240,7 @@ int main(void)
     while (true)
     {
         panda_usb_task();
+        flexray_replay_task();
 		if (time_reached(next_led_toggle_time))
 		{
 			next_led_toggle_time = make_timeout_time_ms(500);
@@ -351,28 +342,7 @@ int main(void)
                 {
                     stats.valid++;
 
-                    uint8_t demuxed = lookup_frame_source(frame.frame_id);
-                    if (demuxed != FROM_UNKNOWN) {
-                        frame.source |= demuxed;
-                        if (demuxed & FROM_FR3) stats.source_fr3++;
-                        if (demuxed & FROM_FR4) stats.source_fr4++;
-                    }
-                    try_cache_last_target_frame(frame.frame_id, frame.cycle_count, expected_len, header);
-
-                    uint8_t filter_direction = 0;
-                    switch (source) {
-                    case FROM_FR1:
-                        filter_direction = FLEXRAY_FILTER_DIR_FR1_TO_FR2;
-                        break;
-                    case FROM_FR2:
-                        filter_direction = FLEXRAY_FILTER_DIR_FR2_TO_FR1;
-                        break;
-                    default:
-                        break;
-                    }
-                    if (!flexray_filter_should_block(frame.frame_id, filter_direction)) {
-                        panda_flexray_fifo_push(&frame);
-                    }
+                    panda_flexray_fifo_push(&frame);
                 }
 
                 pos = (uint16_t)(pos + expected_len);

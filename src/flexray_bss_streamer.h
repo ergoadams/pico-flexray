@@ -35,11 +35,16 @@ extern volatile void *buffer_addresses[2];
 
 // --- Function Prototypes ---
 void streamer_irq0_handler(void);
+void streamer_single_fr1_irq0_handler(void);
 
 // Setup primary stream (FR1/FR2)
 void setup_stream(PIO pio,
                   uint rx_pin_from_fr1, uint tx_en_pin_to_fr2,
                   uint rx_pin_from_fr2, uint tx_en_pin_to_fr1);
+
+// Setup only FR1 receive streaming. The TXEN pin is only a harmless side-set
+// sink for the streamer PIO and must not be the replay TXEN pin.
+void setup_stream_single_fr1(PIO pio, uint rx_pin_from_fr1, uint unused_tx_en_pin);
 
 // Setup secondary stream (FR3/FR4) for source identification
 void setup_stream_fr34(PIO pio,

@@ -336,6 +336,34 @@ void __time_critical_func(streamer_irq0_handler)(void)
     sio_hw->gpio_clr = (1u << 7);
 }
 
+void __time_critical_func(streamer_single_fr1_irq0_handler)(void)
+{
+    sio_hw->gpio_set = (1u << 7);
+    irq_handler_call_count++;
+
+    if (pio_irq_is_set(streamer_pio, 4)) {
+        pio_interrupt_clear(streamer_pio, 4);
+        fr1_header_seen = true;
+    }
+
+    if (!pio_irq_is_set(streamer_pio, 3)) {
+        sio_hw->gpio_clr = (1u << 7);
+        return;
+    }
+
+    pio_interrupt_clear(streamer_pio, 3);
+
+    uint32_t fr1_idx_now = dma_ring_write_idx(dma_data_from_fr1_chan, fr1_ring_buffer, FR1_RING_MASK);
+    if (fr1_idx_now != fr1_prev_write_idx) {
+        fr1_prev_write_idx = fr1_idx_now;
+        fr1_header_seen = false;
+        uint32_t encoded = notify_encode(false, 0, ((irq_counter++) & 0x3FFFF), (uint16_t)fr1_idx_now);
+        (void)notify_queue_push(encoded);
+    }
+
+    sio_hw->gpio_clr = (1u << 7);
+}
+
 // ===================== FR3/FR4 IRQ handler =====================
 // Only records frame IDs seen on each channel for demuxing FR1/FR2.
 // Does NOT push to the notify queue.
@@ -455,6 +483,50 @@ void setup_stream(PIO pio,
     pio_interrupt_clear(pio, 7);
     pio_sm_set_enabled(pio, sm_fr1, true);
     pio_sm_set_enabled(pio, sm_fr2, true);
+}
+
+void setup_stream_single_fr1(PIO pio, uint rx_pin_from_fr1, uint unused_tx_en_pin)
+{
+    streamer_pio = pio;
+    fr1_prev_write_idx = 0;
+    fr1_header_seen = false;
+
+    uint offset = pio_add_program(pio, &flexray_bss_streamer_program);
+    uint sm_fr1 = pio_claim_unused_sm(pio, true);
+    streamer_sm_fr1 = sm_fr1;
+
+    flexray_bss_streamer_program_init(pio, sm_fr1, offset, rx_pin_from_fr1, unused_tx_en_pin);
+    dma_data_from_fr1_chan = dma_claim_unused_channel(true);
+    dma_channel_config dma_c_fr1 = dma_channel_get_default_config(dma_data_from_fr1_chan);
+    channel_config_set_transfer_data_size(&dma_c_fr1, DMA_SIZE_8);
+    channel_config_set_read_increment(&dma_c_fr1, false);
+    channel_config_set_write_increment(&dma_c_fr1, true);
+    channel_config_set_dreq(&dma_c_fr1, pio_get_dreq(pio, sm_fr1, false));
+
+    uint8_t fr1_ring_bits = 0;
+    if (FR1_RING_SIZE_BYTES > 1) {
+        fr1_ring_bits = 32 - __builtin_clz(FR1_RING_SIZE_BYTES - 1);
+    }
+    channel_config_set_ring(&dma_c_fr1, true, fr1_ring_bits);
+
+    dma_rearm_fr1_chan = dma_claim_unused_channel(true);
+    channel_config_set_chain_to(&dma_c_fr1, dma_rearm_fr1_chan);
+
+    dma_channel_configure(dma_data_from_fr1_chan, &dma_c_fr1,
+                          (void *)fr1_ring_buffer,
+                          &pio->rxf[sm_fr1],
+                          DMA_BLOCK_COUNT_BYTES,
+                          true);
+
+    pio_set_irq0_source_enabled(pio, pis_interrupt3, true);
+    pio_set_irq0_source_enabled(pio, pis_interrupt4, true);
+    irq_set_exclusive_handler(pio_get_irq_num(pio, 0), streamer_single_fr1_irq0_handler);
+    irq_set_enabled(pio_get_irq_num(pio, 0), true);
+
+    pio_interrupt_clear(pio, 3);
+    pio_interrupt_clear(pio, 4);
+    pio_interrupt_clear(pio, 7);
+    pio_sm_set_enabled(pio, sm_fr1, true);
 }
 
 // ===================== FR3/FR4 setup =====================
