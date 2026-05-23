@@ -122,3 +122,27 @@ To visualize FlexRay data using Cabana:
    ```bash
    ./tools/cabana/cabana
    ```
+
+### Replaying a CSV log
+
+CSV logs recorded by `flexray_stream_recorder.py` can be replayed from Python to one selected FlexRay bus. The replayer uses the CSV fields `timestamp`, `indicators`, `frame_id`, `payload_length_words`, `header_crc`, `cycle_count`, `payload`, and `frame_crc` to rebuild the raw frame bytes.
+
+Dry-run the bundled example:
+
+```bash
+python replay_csv_log.py ignition_on_start_engine_steering_left_right_middle.csv --bus FR1 --dry-run --limit 100
+```
+
+Replay to a bus:
+
+```bash
+python replay_csv_log.py ignition_on_start_engine_steering_left_right_middle.csv --bus FR1 --min-gap-ms 0.2
+```
+
+Useful filters:
+
+```bash
+python replay_csv_log.py ignition_on_start_engine_steering_left_right_middle.csv --bus FR2 --source 0 --id 0x48,0x47
+```
+
+`--no-timing` sends as fast as USB and the firmware accept frames. By default, timestamp deltas are preserved; `--speed 2.0` replays twice as fast.

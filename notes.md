@@ -11,3 +11,16 @@ python3 filter_ids.py 0x40 0x42 0x43 0x44 0x46 0x48 0x5c 0x61 0x62 0x63 0x68 0x6
 mis tuleb juurde kui auto töötab
 0x48 0x62 0x6b 0x6e 0xd6 0xea 0xf0 0xf1 0xf2 0x104 0x10a 0x10c
 need ei lülita roolilatti välja 
+
+0x40 (64): 49f100000000000000001111ffffffff - a lot of zeros, 1111 and then f-s, counters in the beginning
+0x46 (70): 00000000000000000000000000000000 - all zeros, indicator are always 00011
+0xda (218): from roolilatt fff9feff14ff most of the time, once was fff1710214ff, first 4 are counters
+         from ecu       7afefeff1400
+                        fffdfeff14ff
+                        7cfefeff15ff
+                        depends on the counter in the beginning
+the above have no differences in engine on or off
+0x37 (55) look at i3 notes
+
+python3 replay_csv_log.py steering_start.csv --bus 1 --source 0 --loop --id 0x40,0x46,0xda,0x37
+

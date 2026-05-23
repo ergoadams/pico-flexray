@@ -55,6 +55,7 @@ typedef struct {
 } frame_template_t;
 
 static frame_template_t TEMPLATES[NUM_TRIGGER_RULES];
+static uint8_t REPLAY_FRAMES[4][INJECT_FRAME_PADDED_BYTES] __attribute__((aligned(4)));
 
 // Host override storage: small ring to avoid malloc; single-consumer in ISR context
 typedef struct {
@@ -306,6 +307,55 @@ static void inject_frame(uint8_t *full_frame, uint16_t injector_payload_length, 
     pio_sm_put(pio_forwarder_with_injector, sm, injector_payload_length - 1);
     dma_channel_set_read_addr((uint)dma_chan, (const void *)full_frame, false);
     dma_channel_set_trans_count((uint)dma_chan, (injector_payload_length + 3) / 4, true);
+}
+
+static bool inject_dma_is_busy(uint8_t direction)
+{
+    int dma_chan;
+
+    switch (direction) {
+    case INJECT_DIRECTION_TO_FR1:
+        dma_chan = dma_inject_chan_to_fr1;
+        break;
+    case INJECT_DIRECTION_TO_FR2:
+        dma_chan = dma_inject_chan_to_fr2;
+        break;
+    case INJECT_DIRECTION_TO_FR3:
+        dma_chan = dma_inject_chan_to_fr3;
+        break;
+    case INJECT_DIRECTION_TO_FR4:
+        dma_chan = dma_inject_chan_to_fr4;
+        break;
+    default:
+        return true;
+    }
+
+    return dma_chan < 0 || dma_channel_is_busy((uint)dma_chan);
+}
+
+bool flexray_replay_submit_frame(uint8_t direction, uint16_t len, const uint8_t *frame_bytes)
+{
+    if (frame_bytes == NULL || direction > INJECT_DIRECTION_TO_FR4) {
+        return false;
+    }
+    if (len < 8 || len > INJECT_FRAME_BYTES) {
+        return false;
+    }
+    uint16_t expected_len = (uint16_t)(5u + ((((uint16_t)frame_bytes[2] >> 1) & 0x7Fu) * 2u) + 3u);
+    if (len != expected_len) {
+        return false;
+    }
+    if (inject_dma_is_busy(direction)) {
+        return false;
+    }
+
+    uint8_t *dst = REPLAY_FRAMES[direction];
+    memcpy(dst, frame_bytes, len);
+    if ((len & 0x03u) != 0) {
+        memset(dst + len, 0, (uint32_t)(4u - (len & 0x03u)));
+    }
+    inject_frame(dst, len, direction);
+    return true;
 }
 
 // flexray_frame_t dummy_frame;

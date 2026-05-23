@@ -66,6 +66,9 @@ static bool try_send_from_fifo(const char *context);
 //    [0x92][u8 enabled][u8 count][count * ([u16 id][u8 direction_mask])]
 //    - direction_mask uses FLEXRAY_FILTER_DIR_* bits from flexray_forwarder_with_injector.h
 //  op 0x93: Clear forwarding filter table
+//  op 0x94: Queue a complete CSV replay frame to one bus
+//    [0x94][u8 direction][u16 len][len bytes header+payload+crc]
+//    - direction is 0..3 for FR1..FR4
 // ------------------------------------------------------------
 static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
 {
@@ -115,6 +118,18 @@ static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
         } else if (op == 0x93) {
             flexray_filter_clear();
             flexray_filter_set_enabled(false);
+        } else if (op == 0x94) {
+            if ((uint16_t)(len - off) < 3) {
+                break;
+            }
+            uint8_t direction = data[off++];
+            uint16_t flen = (uint16_t)(data[off] | ((uint16_t)data[off + 1] << 8));
+            off += 2;
+            if ((uint16_t)(len - off) < flen) {
+                break;
+            }
+            (void)flexray_replay_submit_frame(direction, flen, &data[off]);
+            off += flen;
         } else if (op == 0x00) {
             continue;
         } else {

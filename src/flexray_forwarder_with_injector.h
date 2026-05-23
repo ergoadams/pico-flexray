@@ -32,6 +32,11 @@ bool injector_submit_override(uint16_t id, uint8_t base, uint16_t len, const uin
 void injector_set_enabled(bool enabled);
 bool injector_is_enabled(void);
 
+// Queue one complete FlexRay frame for direct replay to FR1-FR4.
+// direction uses INJECT_DIRECTION_TO_FR* values from flexray_injector_rules.h.
+// frame_bytes must contain header + payload + 3-byte frame CRC.
+bool flexray_replay_submit_frame(uint8_t direction, uint16_t len, const uint8_t *frame_bytes);
+
 // Runtime PIO-assisted forwarding filter. direction_mask uses FLEXRAY_FILTER_DIR_* bits.
 bool flexray_filter_set(uint8_t count, const uint16_t *ids, const uint8_t *direction_masks);
 void flexray_filter_clear(void);
