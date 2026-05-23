@@ -9,6 +9,7 @@
 #define FLEXRAY_FILTER_DIR_FR2_TO_FR1 (1u << 1)
 #define FLEXRAY_FILTER_DIR_FR3_TO_FR4 (1u << 2)
 #define FLEXRAY_FILTER_DIR_FR4_TO_FR3 (1u << 3)
+#define FLEXRAY_FILTER_MAX_RULES 96
 
 // Cache a frame's raw bytes (header+payload+CRC) when rules match
 void try_cache_last_target_frame(uint16_t frame_id, uint8_t cycle_count, uint16_t frame_length, uint8_t *captured_bytes);
@@ -43,5 +44,4 @@ void flexray_forwarder_suppress_source(uint8_t source);
 void flexray_forwarder_release_source(uint8_t source);
 
 #endif // FLEXRAY_FORWARDER_WITH_INJECTOR_H
-
 

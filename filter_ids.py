@@ -13,6 +13,7 @@ except Exception:
 PANDA_VID = 0x3801
 PANDA_PID = 0xDDCC
 EP_VENDOR_OUT = 0x03
+MAX_FILTER_RULES = 96
 
 DIR_BITS = {
     "12": 0x01,
@@ -73,12 +74,12 @@ def main() -> int:
         return 1
 
     if args.clear:
-        dev.write(EP_VENDOR_OUT, bytes([0x93]), timeout=1000)
+        dev.write(EP_VENDOR_OUT, bytes([0x92, 0, 0, 0x93]), timeout=1000)
         print("Cleared forwarding filters")
         return 0
 
-    if len(args.rules) > 16:
-        print("At most 16 filter rules are supported", file=sys.stderr)
+    if len(args.rules) > MAX_FILTER_RULES:
+        print(f"At most {MAX_FILTER_RULES} filter rules are supported", file=sys.stderr)
         return 1
 
     payload = bytearray([0x92, 0 if args.disable else 1, len(args.rules)])

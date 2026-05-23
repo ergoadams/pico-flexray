@@ -148,27 +148,30 @@ static inline uint16_t ring_frame_id_from_start(const volatile uint8_t *ring_bas
     return (uint16_t)(((uint16_t)(h0 & 0x07) << 8) | h1);
 }
 
+static inline uint8_t filter_direction_from_source(uint8_t source)
+{
+    switch (source) {
+    case FROM_FR1:
+        return FLEXRAY_FILTER_DIR_FR1_TO_FR2;
+    case FROM_FR2:
+        return FLEXRAY_FILTER_DIR_FR2_TO_FR1;
+    case FROM_FR3:
+        return FLEXRAY_FILTER_DIR_FR3_TO_FR4;
+    case FROM_FR4:
+        return FLEXRAY_FILTER_DIR_FR4_TO_FR3;
+    default:
+        return 0;
+    }
+}
+
 static inline void maybe_suppress_forwarding_from_header(volatile uint8_t *ring_base,
                                                          uint32_t start,
                                                          uint32_t ring_mask,
                                                          uint8_t source)
 {
     uint16_t frame_id = ring_frame_id_from_start(ring_base, start, ring_mask);
-    uint8_t direction = 0;
-    switch (source) {
-    case FROM_FR1:
-        direction = FLEXRAY_FILTER_DIR_FR1_TO_FR2;
-        break;
-    case FROM_FR2:
-        direction = FLEXRAY_FILTER_DIR_FR2_TO_FR1;
-        break;
-    case FROM_FR3:
-        direction = FLEXRAY_FILTER_DIR_FR3_TO_FR4;
-        break;
-    case FROM_FR4:
-        direction = FLEXRAY_FILTER_DIR_FR4_TO_FR3;
-        break;
-    default:
+    uint8_t direction = filter_direction_from_source(source);
+    if (direction == 0) {
         return;
     }
 

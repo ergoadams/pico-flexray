@@ -69,8 +69,6 @@ static bool try_send_from_fifo(const char *context);
 // ------------------------------------------------------------
 static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
 {
-    enum { USB_FILTER_MAX_RULES = 16 };
-
     uint32_t off = 0;
     while ((uint16_t)(len - off) >= 1) {
         uint8_t op = data[off++];
@@ -99,13 +97,13 @@ static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
             }
             bool enabled = data[off++] != 0;
             uint8_t count = data[off++];
-            if (count > USB_FILTER_MAX_RULES ||
+            if (count > FLEXRAY_FILTER_MAX_RULES ||
                 (uint16_t)(len - off) < (uint16_t)(count * 3u)) {
                 break;
             }
 
-            uint16_t ids[USB_FILTER_MAX_RULES];
-            uint8_t masks[USB_FILTER_MAX_RULES];
+            uint16_t ids[FLEXRAY_FILTER_MAX_RULES];
+            uint8_t masks[FLEXRAY_FILTER_MAX_RULES];
             for (uint8_t i = 0; i < count; i++) {
                 ids[i] = (uint16_t)(data[off] | ((uint16_t)data[off + 1] << 8));
                 masks[i] = data[off + 2];
@@ -116,6 +114,7 @@ static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
             }
         } else if (op == 0x93) {
             flexray_filter_clear();
+            flexray_filter_set_enabled(false);
         } else if (op == 0x00) {
             continue;
         } else {
@@ -543,16 +542,28 @@ void tud_resume_cb(void)
 void tud_vendor_rx_cb(uint8_t itf, uint8_t const *buffer, uint16_t bufsize)
 {
     (void)itf;
-    if (bufsize > 0)
-    {
-        handle_vendor_out_payload(buffer, bufsize);
+    uint8_t rxbuf[512];
+    uint16_t total = 0;
+
+    if (bufsize > sizeof(rxbuf)) {
+        bufsize = sizeof(rxbuf);
     }
-    // Drain any additional data queued by USB core
+    if (bufsize > 0) {
+        memcpy(rxbuf, buffer, bufsize);
+        total = bufsize;
+    }
+
+    // Drain additional bytes before parsing so larger filter tables stay whole.
     while (tud_vendor_available()) {
-        uint8_t tmp[256];
-        uint32_t n = tud_vendor_read(tmp, sizeof(tmp));
+        uint32_t space = (uint32_t)(sizeof(rxbuf) - total);
+        if (space == 0) break;
+        uint32_t n = tud_vendor_read(rxbuf + total, space);
         if (n == 0) break;
-        handle_vendor_out_payload(tmp, (uint16_t)n);
+        total = (uint16_t)(total + n);
+    }
+
+    if (total > 0) {
+        handle_vendor_out_payload(rxbuf, total);
     }
     last_usb_activity = get_absolute_time();
 }

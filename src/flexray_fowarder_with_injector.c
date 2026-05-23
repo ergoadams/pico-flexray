@@ -32,8 +32,6 @@ static dma_channel_config injector_to_fr4_dc;
 
 // rules now come from flexray_injector_rules.h
 
-#define FLEXRAY_FILTER_MAX_RULES 16
-
 typedef struct {
     uint16_t frame_id;
     uint8_t direction_mask;

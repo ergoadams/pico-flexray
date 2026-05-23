@@ -358,7 +358,21 @@ int main(void)
                         if (demuxed & FROM_FR4) stats.source_fr4++;
                     }
                     try_cache_last_target_frame(frame.frame_id, frame.cycle_count, expected_len, header);
-                    panda_flexray_fifo_push(&frame);
+
+                    uint8_t filter_direction = 0;
+                    switch (source) {
+                    case FROM_FR1:
+                        filter_direction = FLEXRAY_FILTER_DIR_FR1_TO_FR2;
+                        break;
+                    case FROM_FR2:
+                        filter_direction = FLEXRAY_FILTER_DIR_FR2_TO_FR1;
+                        break;
+                    default:
+                        break;
+                    }
+                    if (!flexray_filter_should_block(frame.frame_id, filter_direction)) {
+                        panda_flexray_fifo_push(&frame);
+                    }
                 }
 
                 pos = (uint16_t)(pos + expected_len);
