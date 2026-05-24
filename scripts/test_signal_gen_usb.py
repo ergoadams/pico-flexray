@@ -7,8 +7,8 @@ import usb.core
 import usb.util
 
 
-VID = 0xCAFE
-PID = 0x4004
+VID = 0x3801
+PID = 0xDDCC
 INTERFACE = 0
 EP_OUT = 0x03
 EP_IN = 0x81
@@ -121,8 +121,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--slots", type=int, default=40, help="number of slots to configure")
     parser.add_argument("--payload-len", type=int, default=26, help="payload bytes per slot, must be even")
-    parser.add_argument("--channel-mask", type=lambda s: int(s, 0), default=0x0F,
-                        help="channel mask for every slot, default 0x0f")
+    parser.add_argument("--bus", choices=("fr1", "fr2"), default="fr1",
+                        help="FlexRay bus to generate on, default fr1")
+    parser.add_argument("--channel-mask", type=lambda s: int(s, 0),
+                        help="advanced: channel mask for every slot; only 0x01/FR1 or 0x02/FR2 is allowed")
     parser.add_argument("--frame-base", type=lambda s: int(s, 0), default=1,
                         help="first frame id, default 1")
     parser.add_argument("--tx-pin", type=parse_pin_list,
@@ -148,8 +150,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--slots must be 1..64")
     if args.payload_len < 0 or args.payload_len > 254 or (args.payload_len & 1):
         raise SystemExit("--payload-len must be an even value from 0..254")
-    if args.channel_mask < 1 or args.channel_mask > 0x0F:
-        raise SystemExit("--channel-mask must be 0x1..0x0f")
+    if args.channel_mask is None:
+        args.channel_mask = 0x01 if args.bus == "fr1" else 0x02
+    if args.channel_mask not in (0x01, 0x02):
+        raise SystemExit("--channel-mask must be exactly 0x01 for FR1 or 0x02 for FR2")
     if args.frame_base < 0 or args.frame_base > 0x7FF:
         raise SystemExit("--frame-base must be 0..0x7ff")
     if (args.tx_pin is None) != (args.txen_pin is None):
@@ -171,7 +175,7 @@ def main() -> int:
 
     dev = usb.core.find(idVendor=VID, idProduct=PID)
     if dev is None:
-        print("FlexRay Signal Generator USB device not found (VID 0xCAFE, PID 0x4004).", file=sys.stderr)
+        print("FlexRay Signal Generator USB device not found (VID 0x3801, PID 0xddcc).", file=sys.stderr)
         return 1
 
     try:
@@ -225,6 +229,20 @@ def main() -> int:
                             f" last_render_us={last_render}"
                             f" max_render_us={max_render}"
                         )
+                    capture_text = ""
+                    if len(diag) >= 45:
+                        capture_notifications = int.from_bytes(diag[25:29], "little")
+                        capture_dropped = int.from_bytes(diag[29:33], "little")
+                        capture_streamed = int.from_bytes(diag[33:37], "little")
+                        capture_invalid = int.from_bytes(diag[37:41], "little")
+                        capture_usb_backpressure = int.from_bytes(diag[41:45], "little")
+                        capture_text = (
+                            f" capture_notifications={capture_notifications}"
+                            f" capture_dropped={capture_dropped}"
+                            f" capture_streamed={capture_streamed}"
+                            f" capture_invalid={capture_invalid}"
+                            f" capture_usb_backpressure={capture_usb_backpressure}"
+                        )
                     print(
                         "diag: "
                         f"txstall_count={stalls} "
@@ -232,6 +250,7 @@ def main() -> int:
                         f"completed_cycles={completed} "
                         f"handled_cycles={handled}"
                         f"{render_text}"
+                        f"{capture_text}"
                     )
                 else:
                     print(f"diag: txstall_count={stalls}")

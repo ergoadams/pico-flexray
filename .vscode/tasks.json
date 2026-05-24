@@ -23,7 +23,7 @@
             "command": "${env:HOME}/.pico-sdk/picotool/2.2.0-a4/picotool/picotool",
             "args": [
                 "load",
-                "${command:raspberry-pi-pico.launchTargetPath}",
+                "${workspaceFolder}/build/rp2350/flexray_signal_gen.elf",
                 "-fx"
             ],
             "presentation": {

@@ -89,6 +89,7 @@ pico_sdk_init()
 add_executable(flexray_signal_gen
     signal_gen/main.c
     signal_gen/flexray_signal_gen.c
+    signal_gen/flexray_capture.c
     signal_gen/flexray_frame.c
     signal_gen/usb_descriptors.c
 )
@@ -98,6 +99,7 @@ pico_set_program_version(flexray_signal_gen "0.2")
 
 pico_generate_pio_header(flexray_signal_gen
     ${CMAKE_CURRENT_LIST_DIR}/signal_gen/flexray_signal_gen.pio
+    ${CMAKE_CURRENT_LIST_DIR}/signal_gen/flexray_capture.pio
 )
 
 pico_enable_stdio_uart(flexray_signal_gen 1)

@@ -22,10 +22,10 @@ extern "C" {
 #define CFG_TUD_ENDPOINT0_SIZE  (64)
 #endif
 
-// Vendor class for WebUSB bulk transfers
+// Vendor class for Panda-compatible capture/configuration bulk transfers
 #define CFG_TUD_VENDOR            1
-#define CFG_TUD_VENDOR_RX_BUFSIZE 512
-#define CFG_TUD_VENDOR_TX_BUFSIZE 512
+#define CFG_TUD_VENDOR_RX_BUFSIZE 4096
+#define CFG_TUD_VENDOR_TX_BUFSIZE 8192
 
 #ifndef CFG_TUSB_DEBUG
 #define CFG_TUSB_DEBUG            0

@@ -7,6 +7,8 @@
 
 #define SIGNAL_GEN_MAX_CHANNELS 4
 #define SIGNAL_GEN_MAX_SLOTS    64
+#define SIGNAL_GEN_MAX_CYCLE_SLOTS 256
+#define SIGNAL_GEN_CYCLE_SLOT_MAX_PAYLOAD_BYTES 64
 #define FLEXRAY_CYCLE_PERIOD_US 5000  // 200 Hz = 5 ms
 
 typedef struct {
@@ -29,6 +31,7 @@ bool signal_gen_set_channel_pin_map(const fr_channel_pins_t *pins, uint num_chan
 bool signal_gen_pio_test(uint channel, bool enabled);
 uint32_t signal_gen_stall_count(void);
 void signal_gen_diag(signal_gen_diag_t *diag);
+bool signal_gen_set_static_slot_us(uint32_t slot_us);
 
 // Configure a shared frame slot with a channel output mask.
 // channel_mask: bitmask of channels to output on (bit 0 = ch0, bit 1 = ch1, ...).
@@ -38,6 +41,9 @@ void signal_gen_diag(signal_gen_diag_t *diag);
 bool signal_gen_set_slot(uint slot, uint8_t channel_mask, uint16_t frame_id,
                          uint8_t indicators, const uint8_t *payload,
                          uint16_t payload_len);
+bool signal_gen_set_cycle_slot(uint slot, uint8_t channel_mask, uint16_t frame_id,
+                               uint8_t indicators, uint8_t cycle_count,
+                               const uint8_t *payload, uint16_t payload_len);
 
 void signal_gen_clear_slot(uint slot);
 void signal_gen_clear_all_slots(void);

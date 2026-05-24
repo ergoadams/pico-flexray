@@ -1,0 +1,71 @@
+; Capture-only FlexRay frame streamer.
+; Samples one RX pin, pushes decoded bytes into RX FIFO, and raises IRQ 3
+; at frame end. Unlike the MITM streamer, this program does not drive TXEN.
+
+.program flexray_capture
+.fifo rx
+.in 32 left auto 8
+
+.define public IDLE_COUNT 10
+.define public BSS_SEARCH_TIMEOUT 31
+.define public DATA_BITS 7
+
+.wrap_target
+entry_point:
+    set x, IDLE_COUNT
+idle_loop:
+    jmp pin is_high [7]
+    jmp entry_point
+is_high:
+    jmp x-- idle_loop [1]
+    wait 0 pin 0
+    wait 0 irq 7
+    irq set 7
+    wait 1 pin 0 [6]
+    irq set 4 rel
+    set x, BSS_SEARCH_TIMEOUT [2]
+
+find_bss_falling_edge_loop:
+    jmp pin high_path
+    jmp found_falling_edge
+
+high_path:
+    jmp x-- find_bss_falling_edge_loop
+    jmp frame_end
+
+found_falling_edge:
+    nop [7]
+    set x, DATA_BITS [3]
+sample_byte_loop:
+    in pins, 1
+    nop [6]
+    jmp x-- sample_byte_loop [1]
+
+bss_stall_low_detection_loop:
+    set x, BSS_SEARCH_TIMEOUT
+wait_bss_high_loop:
+    jmp pin high_path
+    jmp x-- wait_bss_high_loop
+
+frame_end:
+    wait 1 pin 0
+    mov isr, null
+    irq set 3
+    irq clear 7
+.wrap
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void flexray_capture_program_init(PIO pio, uint sm, uint offset, uint rx_pin) {
+    pio_sm_set_consecutive_pindirs(pio, sm, rx_pin, 1, false);
+    pio_sm_config c = flexray_capture_program_get_default_config(offset);
+
+    sm_config_set_in_pins(&c, rx_pin);
+    sm_config_set_in_pin_count(&c, 1);
+    sm_config_set_jmp_pin(&c, rx_pin);
+    float div = (float)clock_get_hz(clk_sys) / (10.0f * 1000000.0f * 10.0f);
+    sm_config_set_clkdiv(&c, div);
+    pio_sm_init(pio, sm, offset, &c);
+}
+%}

@@ -25,6 +25,17 @@ typedef struct {
 } frame_slot_t;
 
 typedef struct {
+    bool active;
+    uint8_t slot;
+    uint8_t channel_mask;
+    uint16_t frame_id;
+    uint8_t indicators;
+    uint8_t cycle_count;
+    uint16_t payload_len;
+    uint8_t payload[SIGNAL_GEN_CYCLE_SLOT_MAX_PAYLOAD_BYTES];
+} cycle_slot_t;
+
+typedef struct {
     bool hw_ready;
     uint sm;
     uint tx_pin;
@@ -37,12 +48,15 @@ static PIO gen_pio;
 static uint gen_program_offset;
 static channel_state_t chans[SIGNAL_GEN_MAX_CHANNELS];
 static frame_slot_t slots[SIGNAL_GEN_MAX_SLOTS];
+static cycle_slot_t cycle_slots[SIGNAL_GEN_MAX_CYCLE_SLOTS];
+static uint8_t cycle_frame_buf[MAX_FRAME_BUF_SIZE_BYTES] __attribute__((aligned(4)));
 static uint num_hw_channels;
 
 static bool running;
 static uint8_t cycle_count;
 static uint32_t tx_count;
 static uint32_t slot_duration_us;
+static uint32_t requested_slot_duration_us;
 
 #define FLEXRAY_BITS_PER_US 10u
 #define CYCLE_BITS (FLEXRAY_CYCLE_PERIOD_US * FLEXRAY_BITS_PER_US)
@@ -82,6 +96,7 @@ bool signal_gen_init(PIO pio, const fr_channel_pins_t *pins, uint num_channels)
     cycle_count = 0;
     tx_count = 0;
     slot_duration_us = 0;
+    requested_slot_duration_us = 0;
     dma_completed_cycles = 0;
     handled_completed_cycles = 0;
     current_tx_mask = 0;
@@ -91,6 +106,7 @@ bool signal_gen_init(PIO pio, const fr_channel_pins_t *pins, uint num_channels)
     max_render_us = 0;
     full_render_banks_remaining = 0;
     memset(slots, 0, sizeof(slots));
+    memset(cycle_slots, 0, sizeof(cycle_slots));
 
     gen_program_offset = pio_add_program(pio, &flexray_signal_gen_program);
 
@@ -167,27 +183,60 @@ static void park_channel(channel_state_t *ch)
 
 // Build frame into slot's frame_buf and sets *out_byte_count to the real
 // frame byte count. Padding is kept only for aligned scratch storage.
-static uint16_t build_frame(frame_slot_t *sl, uint8_t cyc, uint32_t *out_byte_count)
+static uint16_t build_frame_bytes(uint8_t *frame_buf, uint16_t frame_id, uint8_t indicators,
+                                  const uint8_t *payload, uint16_t payload_len,
+                                  uint8_t cyc, uint32_t *out_byte_count)
 {
-    uint8_t plw = (uint8_t)(sl->payload_len / 2);
-    build_header(sl->frame_buf, sl->frame_id, sl->indicators, plw, cyc);
+    uint8_t plw = (uint8_t)(payload_len / 2);
+    build_header(frame_buf, frame_id, indicators, plw, cyc);
 
-    if (sl->payload_len > 0)
-        memcpy(sl->frame_buf + 5, sl->payload, sl->payload_len);
+    if (payload_len > 0)
+        memcpy(frame_buf + 5, payload, payload_len);
 
-    uint16_t before_crc = (uint16_t)(5 + sl->payload_len);
-    uint32_t crc = calculate_flexray_frame_crc(sl->frame_buf, before_crc);
-    sl->frame_buf[before_crc + 0] = (uint8_t)(crc >> 16);
-    sl->frame_buf[before_crc + 1] = (uint8_t)(crc >> 8);
-    sl->frame_buf[before_crc + 2] = (uint8_t)(crc);
+    uint16_t before_crc = (uint16_t)(5 + payload_len);
+    uint32_t crc = calculate_flexray_frame_crc(frame_buf, before_crc);
+    frame_buf[before_crc + 0] = (uint8_t)(crc >> 16);
+    frame_buf[before_crc + 1] = (uint8_t)(crc >> 8);
+    frame_buf[before_crc + 2] = (uint8_t)(crc);
 
     uint16_t total_len = (uint16_t)(before_crc + 3);
     *out_byte_count = (uint32_t)total_len;
 
     while (total_len & 3)
-        sl->frame_buf[total_len++] = 0xFF;
+        frame_buf[total_len++] = 0xFF;
 
     return total_len;
+}
+
+static uint16_t build_frame(frame_slot_t *sl, uint8_t cyc, uint32_t *out_byte_count)
+{
+    return build_frame_bytes(sl->frame_buf, sl->frame_id, sl->indicators,
+                             sl->payload, sl->payload_len, cyc, out_byte_count);
+}
+
+static uint16_t build_cycle_frame(cycle_slot_t *sl, uint8_t cyc, uint32_t *out_byte_count)
+{
+    return build_frame_bytes(cycle_frame_buf, sl->frame_id, sl->indicators,
+                             sl->payload, sl->payload_len, cyc, out_byte_count);
+}
+
+static cycle_slot_t *find_cycle_slot(uint slot, uint8_t cyc)
+{
+    for (uint i = 0; i < SIGNAL_GEN_MAX_CYCLE_SLOTS; i++) {
+        if (cycle_slots[i].active && cycle_slots[i].slot == slot &&
+            cycle_slots[i].cycle_count == cyc) {
+            return &cycle_slots[i];
+        }
+    }
+    return NULL;
+}
+
+static bool any_cycle_slots_active(void)
+{
+    for (uint i = 0; i < SIGNAL_GEN_MAX_CYCLE_SLOTS; i++) {
+        if (cycle_slots[i].active) return true;
+    }
+    return false;
 }
 
 static uint32_t calc_payload_slot_duration(uint16_t payload_len)
@@ -206,8 +255,15 @@ static uint32_t calc_slot_duration(void)
     for (uint s = 0; s < SIGNAL_GEN_MAX_SLOTS; s++)
         if (slots[s].active && slots[s].payload_len > max_payload)
             max_payload = slots[s].payload_len;
+    for (uint i = 0; i < SIGNAL_GEN_MAX_CYCLE_SLOTS; i++)
+        if (cycle_slots[i].active && cycle_slots[i].payload_len > max_payload)
+            max_payload = cycle_slots[i].payload_len;
 
-    return calc_payload_slot_duration(max_payload);
+    uint32_t automatic = calc_payload_slot_duration(max_payload);
+    if (requested_slot_duration_us > automatic) {
+        return requested_slot_duration_us;
+    }
+    return automatic;
 }
 
 static uint32_t active_slot_extent(void)
@@ -216,6 +272,9 @@ static uint32_t active_slot_extent(void)
     for (uint s = 0; s < SIGNAL_GEN_MAX_SLOTS; s++)
         if (slots[s].active)
             extent = s + 1u;
+    for (uint i = 0; i < SIGNAL_GEN_MAX_CYCLE_SLOTS; i++)
+        if (cycle_slots[i].active && cycle_slots[i].slot + 1u > extent)
+            extent = cycle_slots[i].slot + 1u;
     return extent;
 }
 
@@ -292,17 +351,30 @@ static uint8_t render_cycle_buffers(uint8_t cyc, uint buffer_index)
     for (uint s = 0; s < SIGNAL_GEN_MAX_SLOTS; s++) {
         uint32_t slot_end_bit = (s + 1u) * slot_bits;
         frame_slot_t *sl = &slots[s];
+        cycle_slot_t *csl = find_cycle_slot(s, cyc);
         uint32_t frame_byte_count = 0;
         uint8_t active_mask = 0;
+        uint8_t *frame_buf = NULL;
 
-        if (sl->active) {
+        if (csl != NULL) {
+            active_mask = (uint8_t)(csl->channel_mask & ((1u << num_hw_channels) - 1u));
+            if (active_mask) {
+                build_cycle_frame(csl, cyc, &frame_byte_count);
+                frame_buf = cycle_frame_buf;
+            }
+        } else if (sl->active) {
             active_mask = (uint8_t)(sl->channel_mask & ((1u << num_hw_channels) - 1u));
-            if (active_mask)
+            if (active_mask) {
                 build_frame(sl, cyc, &frame_byte_count);
+                frame_buf = sl->frame_buf;
+            }
         }
 
         for (uint c = 0; c < num_hw_channels; c++) {
             if (active_mask & (1u << c)) {
+                if (frame_buf != sl->frame_buf && frame_buf != NULL) {
+                    memcpy(sl->frame_buf, frame_buf, frame_byte_count);
+                }
                 render_built_slot_frame_bits(sl, frame_byte_count, &bws[c], slot_end_bit);
                 tx_mask |= (1u << c);
             } else {
@@ -355,15 +427,28 @@ static uint8_t patch_cycle_to_buffer(uint8_t cyc, uint buffer_index, uint source
 
     for (uint s = 0; s < SIGNAL_GEN_MAX_SLOTS; s++) {
         frame_slot_t *sl = &slots[s];
-        uint8_t active_mask = sl->active
-                              ? (uint8_t)(sl->channel_mask & ((1u << num_hw_channels) - 1u))
-                              : 0;
+        cycle_slot_t *csl = find_cycle_slot(s, cyc);
+        uint8_t active_mask = csl != NULL
+                              ? (uint8_t)(csl->channel_mask & ((1u << num_hw_channels) - 1u))
+                              : (sl->active
+                                 ? (uint8_t)(sl->channel_mask & ((1u << num_hw_channels) - 1u))
+                                 : 0);
         if (!active_mask) continue;
 
         uint32_t frame_byte_count;
-        build_frame(sl, cyc, &frame_byte_count);
+        uint8_t *frame_buf;
+        uint16_t payload_len;
+        if (csl != NULL) {
+            build_cycle_frame(csl, cyc, &frame_byte_count);
+            frame_buf = cycle_frame_buf;
+            payload_len = csl->payload_len;
+        } else {
+            build_frame(sl, cyc, &frame_byte_count);
+            frame_buf = sl->frame_buf;
+            payload_len = sl->payload_len;
+        }
         uint32_t frame_start_bit = s * slot_bits;
-        uint32_t crc_index = 5u + sl->payload_len;
+        uint32_t crc_index = 5u + payload_len;
         uint32_t patch_indices[8] = {
             0u, 1u, 2u, 3u, 4u,
             crc_index, crc_index + 1u, crc_index + 2u,
@@ -376,7 +461,7 @@ static uint8_t patch_cycle_to_buffer(uint8_t cyc, uint buffer_index, uint source
                 patch_encoded_byte(stream_cycle_bufs[c][buffer_index],
                                    frame_start_bit,
                                    patch_indices[i],
-                                   sl->frame_buf[patch_indices[i]]);
+                                   frame_buf[patch_indices[i]]);
             tx_mask |= (1u << c);
         }
     }
@@ -571,6 +656,14 @@ uint32_t signal_gen_stall_count(void)
     return txstall_count;
 }
 
+bool signal_gen_set_static_slot_us(uint32_t slot_us)
+{
+    if (running) return false;
+    if (slot_us > FLEXRAY_CYCLE_PERIOD_US) return false;
+    requested_slot_duration_us = slot_us;
+    return true;
+}
+
 void signal_gen_diag(signal_gen_diag_t *diag)
 {
     if (diag == NULL) return;
@@ -597,9 +690,10 @@ static uint8_t maintain_cycle_buffers(void)
     while (handled_completed_cycles < completed) {
         uint completed_bank = handled_completed_cycles & 1u;
         uint8_t render_cycle = (uint8_t)((handled_completed_cycles + 2u) & 0x3Fu);
-        if (full_render_banks_remaining > 0) {
+        if (full_render_banks_remaining > 0 || any_cycle_slots_active()) {
             tx_mask |= render_cycle_to_buffer(render_cycle, completed_bank);
-            full_render_banks_remaining--;
+            if (full_render_banks_remaining > 0)
+                full_render_banks_remaining--;
         } else {
             tx_mask |= patch_cycle_to_buffer(render_cycle, completed_bank, completed_bank ^ 1u);
         }
@@ -637,11 +731,58 @@ bool signal_gen_set_slot(uint slot, uint8_t channel_mask, uint16_t frame_id,
     return true;
 }
 
+bool signal_gen_set_cycle_slot(uint slot, uint8_t channel_mask, uint16_t frame_id,
+                               uint8_t indicators, uint8_t cycle_count,
+                               const uint8_t *payload, uint16_t payload_len)
+{
+    if (slot >= SIGNAL_GEN_MAX_SLOTS) return false;
+    if (frame_id > 2047 || payload_len > SIGNAL_GEN_CYCLE_SLOT_MAX_PAYLOAD_BYTES) return false;
+    if (payload_len & 1) return false;
+    if (cycle_count >= 64) return false;
+    if (running && calc_payload_slot_duration(payload_len) > slot_duration_us)
+        return false;
+    uint8_t hw_mask = (uint8_t)((1u << num_hw_channels) - 1u);
+    if (channel_mask == 0 || (channel_mask & ~hw_mask)) return false;
+
+    cycle_slot_t *target = NULL;
+    for (uint i = 0; i < SIGNAL_GEN_MAX_CYCLE_SLOTS; i++) {
+        if (cycle_slots[i].active && cycle_slots[i].slot == slot &&
+            cycle_slots[i].cycle_count == cycle_count) {
+            target = &cycle_slots[i];
+            break;
+        }
+        if (target == NULL && !cycle_slots[i].active) {
+            target = &cycle_slots[i];
+        }
+    }
+    if (target == NULL) return false;
+
+    target->slot = (uint8_t)slot;
+    target->frame_id = frame_id;
+    target->indicators = indicators;
+    target->cycle_count = cycle_count;
+    target->payload_len = payload_len;
+    target->channel_mask = channel_mask;
+    if (payload_len > 0 && payload != NULL)
+        memcpy(target->payload, payload, payload_len);
+    target->active = true;
+    if (running)
+        full_render_banks_remaining = CYCLE_BUFFER_COUNT;
+
+    printf("SETC slot%u: cycle=%u mask=0x%02x id=0x%03x ind=0x%02x len=%u\n",
+           slot, cycle_count, channel_mask, frame_id, indicators, payload_len);
+    return true;
+}
+
 void signal_gen_clear_slot(uint slot)
 {
     if (slot >= SIGNAL_GEN_MAX_SLOTS) return;
     slots[slot].active = false;
     slots[slot].channel_mask = 0;
+    for (uint i = 0; i < SIGNAL_GEN_MAX_CYCLE_SLOTS; i++) {
+        if (cycle_slots[i].active && cycle_slots[i].slot == slot)
+            cycle_slots[i].active = false;
+    }
     if (running)
         full_render_banks_remaining = CYCLE_BUFFER_COUNT;
     printf("CLEAR slot%u\n", slot);
@@ -653,6 +794,7 @@ void signal_gen_clear_all_slots(void)
         slots[slot].active = false;
         slots[slot].channel_mask = 0;
     }
+    memset(cycle_slots, 0, sizeof(cycle_slots));
     if (running)
         full_render_banks_remaining = CYCLE_BUFFER_COUNT;
     printf("CLEAR all slots\n");

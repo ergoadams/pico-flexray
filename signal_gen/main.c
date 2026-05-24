@@ -9,6 +9,7 @@
 #include "tusb.h"
 #include "pico/bootrom.h"
 #include "flexray_signal_gen.h"
+#include "flexray_capture.h"
 
 #define BGE_PIN        2
 #define STBN_PIN       3
@@ -25,6 +26,11 @@
 #define TXEN_FR3 9
 #define TXD_FR4  16
 #define TXEN_FR4 22
+
+#define RXD_FR1  26
+#define RXD_FR2  6
+#define RXD_FR3  8
+#define RXD_FR4  21
 
 // PWM configuration for LEDs – keep brightness low to avoid glare
 #define LED_PWM_WRAP            1023u
@@ -71,6 +77,11 @@ static bool is_reserved_control_pin(uint pin)
            pin == RELAY_FR_1_2 || pin == RELAY_FR_3_4;
 }
 
+static bool is_single_fr12_channel_mask(uint8_t channel_mask)
+{
+    return channel_mask == 0x01u || channel_mask == 0x02u;
+}
+
 static void pin_test_set(bool enabled)
 {
     signal_gen_stop();
@@ -114,7 +125,26 @@ static void pin_test_task(void)
 // CMD_CLEAR_ALL:  [0x0b]
 // CMD_PIN_TEST:   [0x0c][mode 0/1] — drive configured TX pins at ~10 Hz for probing
 // CMD_PIO_TEST:   [0x0d][mode 0/1] — drive ch0 through PIO FIFO for probing
-// CMD_DIAG:       [0x0e] — returns [OK][txstall:4LE][late:4LE][completed:4LE][handled:4LE][last_render_us:4LE][max_render_us:4LE]
+// CMD_DIAG:       [0x0e] — returns [OK] plus 11 little-endian u32 counters:
+//                 txstall, late, completed, handled, last_render_us, max_render_us,
+//                 capture_notifications, capture_dropped, capture_streamed,
+//                 capture_invalid, capture_usb_backpressure
+// CMD_SET_CYCLE_SLOT:
+//                 [0x0f][slot][ch_mask][fid:2LE][ind][cycle][plen:2LE][payload...]
+// CMD_SET_STATIC_SLOT_US:
+//                 [0x10][slot_us:4LE], 0 restores automatic minimum
+// CMD_RESET_CAPTURE_TIMING:
+//                 [0x11]
+// CMD_GET_CAPTURE_TIMING:
+//                 [0x12][FR1 last,min,max,avg,count][FR2 last,min,max,avg,count], u32 LE
+// CMD_SET_CAPTURE_STREAM:
+//                 [0x13][enabled]
+// CMD_SET_TIMING_PAIR:
+//                 [0x14][source 0/1/2][from_id:2LE][to_id:2LE]
+// CMD_GET_TIMING_PAIR:
+//                 [0x15][enabled][source][from_id][to_id][last,min,max,avg,count]
+// Captured FlexRay frames are also streamed on vendor IN as:
+// [u16 body_len_le][u8 source][5B header][payload][3B crc]
 #define CMD_PING        0x02
 #define CMD_SET_SLOT    0x03
 #define CMD_CLEAR_SLOT  0x04
@@ -128,6 +158,13 @@ static void pin_test_task(void)
 #define CMD_PIN_TEST    0x0C
 #define CMD_PIO_TEST    0x0D
 #define CMD_DIAG        0x0E
+#define CMD_SET_CYCLE_SLOT 0x0F
+#define CMD_SET_STATIC_SLOT_US 0x10
+#define CMD_RESET_CAPTURE_TIMING 0x11
+#define CMD_GET_CAPTURE_TIMING 0x12
+#define CMD_SET_CAPTURE_STREAM 0x13
+#define CMD_SET_TIMING_PAIR 0x14
+#define CMD_GET_TIMING_PAIR 0x15
 
 #define RSP_OK          0x00
 #define RSP_ERR_INVALID 0x01
@@ -160,6 +197,13 @@ static void setup_pins(void)
     gpio_pull_up(TXEN_FR2);
     gpio_pull_up(TXEN_FR3);
     gpio_pull_up(TXEN_FR4);
+
+    gpio_init(RXD_FR1);
+    gpio_set_dir(RXD_FR1, GPIO_IN);
+    gpio_pull_up(RXD_FR1);
+    gpio_init(RXD_FR2);
+    gpio_set_dir(RXD_FR2, GPIO_IN);
+    gpio_pull_up(RXD_FR2);
 
     // Configure LEDs for PWM so we can run a low-brightness breathing pattern
     gpio_set_function(LED_FR12_PIN, GPIO_FUNC_PWM);
@@ -218,7 +262,7 @@ static void handle_usb_data(const uint8_t *data, uint16_t len)
         if (len < 8) { send_response(RSP_ERR_INVALID); return; }
         uint8_t slot    = data[1];
         uint8_t ch_mask = data[2];
-        if (slot >= SIGNAL_GEN_MAX_SLOTS || ch_mask == 0 || ch_mask > 0x0F) {
+        if (slot >= SIGNAL_GEN_MAX_SLOTS || !is_single_fr12_channel_mask(ch_mask)) {
             send_response(RSP_ERR_INVALID); return;
         }
         uint16_t fid  = (uint16_t)(data[3] | ((uint16_t)data[4] << 8));
@@ -228,6 +272,36 @@ static void handle_usb_data(const uint8_t *data, uint16_t len)
         const uint8_t *payload = (plen > 0) ? &data[8] : NULL;
         bool ok = signal_gen_set_slot(slot, ch_mask, fid, ind, payload, plen);
         send_response(ok ? RSP_OK : RSP_ERR_INVALID);
+        break;
+    }
+
+    case CMD_SET_CYCLE_SLOT: {
+        if (len < 9) { send_response(RSP_ERR_INVALID); return; }
+        uint8_t slot    = data[1];
+        uint8_t ch_mask = data[2];
+        if (slot >= SIGNAL_GEN_MAX_SLOTS || !is_single_fr12_channel_mask(ch_mask)) {
+            send_response(RSP_ERR_INVALID); return;
+        }
+        uint16_t fid  = (uint16_t)(data[3] | ((uint16_t)data[4] << 8));
+        uint8_t  ind  = data[5];
+        uint8_t  cyc  = data[6];
+        uint16_t plen = (uint16_t)(data[7] | ((uint16_t)data[8] << 8));
+        if (cyc >= 64 || len < 9u + plen) {
+            send_response(RSP_ERR_INVALID); return;
+        }
+        const uint8_t *payload = (plen > 0) ? &data[9] : NULL;
+        bool ok = signal_gen_set_cycle_slot(slot, ch_mask, fid, ind, cyc, payload, plen);
+        send_response(ok ? RSP_OK : RSP_ERR_INVALID);
+        break;
+    }
+
+    case CMD_SET_STATIC_SLOT_US: {
+        if (len < 5) { send_response(RSP_ERR_INVALID); return; }
+        uint32_t slot_us = (uint32_t)data[1] |
+                           ((uint32_t)data[2] << 8) |
+                           ((uint32_t)data[3] << 16) |
+                           ((uint32_t)data[4] << 24);
+        send_response(signal_gen_set_static_slot_us(slot_us) ? RSP_OK : RSP_ERR_INVALID);
         break;
     }
 
@@ -352,21 +426,109 @@ static void handle_usb_data(const uint8_t *data, uint16_t len)
 
     case CMD_DIAG: {
         signal_gen_diag_t diag;
+        flexray_capture_diag_t capture_diag;
         signal_gen_diag(&diag);
-        uint8_t buf[25] = { RSP_OK };
-        uint32_t values[6] = {
+        flexray_capture_diag(&capture_diag);
+        uint8_t buf[45] = { RSP_OK };
+        uint32_t values[11] = {
             diag.txstall_count,
             diag.late_buffer_count,
             diag.completed_cycles,
             diag.handled_cycles,
             diag.last_render_us,
             diag.max_render_us,
+            capture_diag.notifications,
+            capture_diag.dropped_notifications,
+            capture_diag.frames_streamed,
+            capture_diag.invalid_frames,
+            capture_diag.usb_backpressure,
         };
-        for (uint i = 0; i < 6; i++) {
+        for (uint i = 0; i < 11; i++) {
             buf[1u + i * 4u] = (uint8_t)values[i];
             buf[2u + i * 4u] = (uint8_t)(values[i] >> 8);
             buf[3u + i * 4u] = (uint8_t)(values[i] >> 16);
             buf[4u + i * 4u] = (uint8_t)(values[i] >> 24);
+        }
+        tud_vendor_write(buf, sizeof(buf));
+        tud_vendor_write_flush();
+        break;
+    }
+
+    case CMD_RESET_CAPTURE_TIMING:
+        flexray_capture_reset_timing();
+        send_response(RSP_OK);
+        break;
+
+    case CMD_GET_CAPTURE_TIMING: {
+        flexray_capture_diag_t capture_diag;
+        flexray_capture_diag(&capture_diag);
+        uint8_t buf[41] = { RSP_OK };
+        uint32_t values[10] = {
+            capture_diag.fss_delta_last_us[0],
+            capture_diag.fss_delta_min_us[0],
+            capture_diag.fss_delta_max_us[0],
+            capture_diag.fss_delta_avg_us[0],
+            capture_diag.fss_delta_count[0],
+            capture_diag.fss_delta_last_us[1],
+            capture_diag.fss_delta_min_us[1],
+            capture_diag.fss_delta_max_us[1],
+            capture_diag.fss_delta_avg_us[1],
+            capture_diag.fss_delta_count[1],
+        };
+        for (uint i = 0; i < 10; i++) {
+            buf[1u + i * 4u] = (uint8_t)values[i];
+            buf[2u + i * 4u] = (uint8_t)(values[i] >> 8);
+            buf[3u + i * 4u] = (uint8_t)(values[i] >> 16);
+            buf[4u + i * 4u] = (uint8_t)(values[i] >> 24);
+        }
+        tud_vendor_write(buf, sizeof(buf));
+        tud_vendor_write_flush();
+        break;
+    }
+
+    case CMD_SET_CAPTURE_STREAM:
+        if (len < 2) { send_response(RSP_ERR_INVALID); return; }
+        flexray_capture_set_usb_streaming(data[1] != 0);
+        send_response(RSP_OK);
+        break;
+
+    case CMD_SET_TIMING_PAIR: {
+        if (len < 6) { send_response(RSP_ERR_INVALID); return; }
+        uint8_t source = data[1];
+        uint16_t from_id = (uint16_t)(data[2] | ((uint16_t)data[3] << 8));
+        uint16_t to_id = (uint16_t)(data[4] | ((uint16_t)data[5] << 8));
+        if (source > 2 || from_id > 2047 || to_id > 2047) {
+            send_response(RSP_ERR_INVALID); return;
+        }
+        flexray_capture_set_timing_pair(source, from_id, to_id);
+        send_response(RSP_OK);
+        break;
+    }
+
+    case CMD_GET_TIMING_PAIR: {
+        flexray_capture_diag_t capture_diag;
+        flexray_capture_diag(&capture_diag);
+        uint8_t buf[30] = {
+            RSP_OK,
+            capture_diag.pair_enabled,
+            capture_diag.pair_source,
+            (uint8_t)capture_diag.pair_from_id,
+            (uint8_t)(capture_diag.pair_from_id >> 8),
+            (uint8_t)capture_diag.pair_to_id,
+            (uint8_t)(capture_diag.pair_to_id >> 8),
+        };
+        uint32_t values[5] = {
+            capture_diag.pair_last_us,
+            capture_diag.pair_min_us,
+            capture_diag.pair_max_us,
+            capture_diag.pair_avg_us,
+            capture_diag.pair_count,
+        };
+        for (uint i = 0; i < 5; i++) {
+            buf[7u + i * 4u] = (uint8_t)values[i];
+            buf[8u + i * 4u] = (uint8_t)(values[i] >> 8);
+            buf[9u + i * 4u] = (uint8_t)(values[i] >> 16);
+            buf[10u + i * 4u] = (uint8_t)(values[i] >> 24);
         }
         tud_vendor_write(buf, sizeof(buf));
         tud_vendor_write_flush();
@@ -430,10 +592,17 @@ int main(void)
     active_pin_count = 4;
     signal_gen_init(pio0, pins, 4);
 
-    printf("Ready — connect via WebUSB\n");
+    fr_capture_channel_t capture_channels[2] = {
+        { .rx_pin = RXD_FR1, .source = 1 },
+        { .rx_pin = RXD_FR2, .source = 2 },
+    };
+    (void)flexray_capture_init(pio1, capture_channels, 2);
+
+    printf("Ready - passive capture enabled; configure signal generation over vendor USB\n");
 
     while (true) {
         tud_task();
+        flexray_capture_task();
         pin_test_task();
         bool running = signal_gen_is_running();
         uint8_t tx_mask = running ? signal_gen_tick() : 0;
