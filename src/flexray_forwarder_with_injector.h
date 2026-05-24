@@ -42,6 +42,7 @@ bool flexray_filter_set(uint8_t count, const uint16_t *ids, const uint8_t *direc
 void flexray_filter_clear(void);
 void flexray_filter_set_enabled(bool enabled);
 bool flexray_filter_is_enabled(void);
+bool flexray_filter_set_whitelist_defaults(uint8_t direction_mask);
 bool flexray_filter_should_block(uint16_t frame_id, uint8_t direction);
 
 // Called from streamer IRQs after an early header match and again at frame end.

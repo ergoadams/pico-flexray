@@ -66,6 +66,8 @@ static bool try_send_from_fifo(const char *context);
 //    [0x92][u8 enabled][u8 count][count * ([u16 id][u8 direction_mask])]
 //    - direction_mask uses FLEXRAY_FILTER_DIR_* bits from flexray_forwarder_with_injector.h
 //  op 0x93: Clear forwarding filter table
+//  op 0x95: Set whitelist-default directions for forwarding filter
+//    [0x95][u8 direction_mask]; listed directions block by default, rule matches pass
 //  op 0x94: Queue a complete CSV replay frame to one bus
 //    [0x94][u8 direction][u16 len][len bytes header+payload+crc]
 //    - direction is 0..3 for FR1..FR4
@@ -130,6 +132,11 @@ static void handle_vendor_out_payload(const uint8_t *data, uint16_t len)
             }
             (void)flexray_replay_submit_frame(direction, flen, &data[off]);
             off += flen;
+        } else if (op == 0x95) {
+            if ((uint16_t)(len - off) < 1) {
+                break;
+            }
+            (void)flexray_filter_set_whitelist_defaults(data[off++]);
         } else if (op == 0x00) {
             continue;
         } else {
